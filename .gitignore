@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# Experiments & local runs (keep only tracked launcher scripts under experiments/)
+experiments/**/temp/
+experiments/**/temp_csv/
+experiments/**/outputs_*/
+experiments/**/*.log
+experiments/**/*.txt
+experiments/**/*.jsonl
+experiments/**/*.csv
+experiments/**/run.log
+experiments/**/pid.txt
+experiments/**/nohup*.pid
+experiments/**/OUTPUT_DIR.txt
+experiments/**/metadata*.json
+experiments/**/progress.json
+experiments/**/stats.csv
+experiments/**/combined_results.csv
+experiments/**/model_config.json
+experiments/**/args.json
+experiments/**/launch_cmd.sh
+
+# Weights & caches (obtain separately)
+models/
+resource/Qwen3-0.6B+Qwen3-8B/
+resource/.cache/
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Logs & misc
+*.log
+nohup.out
+wandb/
+output/
+runs/
+tmp_*/
+tmpx*/
+torchinductor_*/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace

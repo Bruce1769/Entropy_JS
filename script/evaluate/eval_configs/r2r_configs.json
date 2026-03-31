@@ -1,0 +1,38 @@
+{
+    "aime":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "aime24":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "aime25":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "gpqa":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.42
+    },
+    "livecodebench":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.1387
+    },
+    "math500":{
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "amc": {
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "amc_recent": {
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    },
+    "svamp": {
+        "router_path": "resource/default_router.pt",
+        "threshold": 0.40595959595959596
+    }
+}

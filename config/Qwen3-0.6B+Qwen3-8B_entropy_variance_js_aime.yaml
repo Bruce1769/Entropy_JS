@@ -1,0 +1,24 @@
+{
+  "special_tokens": {
+    "think_start": 151667,
+    "think_end": 151668
+  },
+  "quick": {
+    "model_name": "Qwen3-0.6B",
+    "model_path": "models/Qwen3-0.6B",
+    "param": "0.6",
+    "mem_fraction_static": 0.40
+  },
+  "reference": {
+    "model_name": "Qwen3-8B",
+    "model_path": "models/Qwen3-8B",
+    "param": "8",
+    "mem_fraction_static": 0.68
+  },
+  "router": {
+    "router_name": "Qwen3-0.6B+Qwen3-8B",
+    "switching_strategy": "entropy_variance_js",
+    "entropy_threshold": 0.6,
+    "js_threshold": 0.25
+  }
+}

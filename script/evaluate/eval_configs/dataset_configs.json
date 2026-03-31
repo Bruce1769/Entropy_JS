@@ -1,0 +1,161 @@
+{
+    "aime": {
+        "name": "AIME Mathematical Problems, default to AIME24-25",
+        "path": "GY2233/AIME-2024-2025",
+        "answer_type": "boxed",
+        "id_field": "ID",
+        "question_field": "Problem",
+        "answer_field": "Answer",
+        "prompt_template": "{question}",
+        "description": "American Invitational Mathematics Examination problems with numerical answers from 2024 to 2025"
+    },
+    "aime23": {
+        "name": "AIME Mathematical Problems",
+        "path": "di-zhang-fdu/AIME_1983_2024",
+        "answer_type": "boxed",
+        "id_field": "ID",
+        "question_field": "Question",
+        "answer_field": "Answer",
+        "prompt_template": "{question}",
+        "description": "American Invitational Mathematics Examination problems with numerical answers from 1983 to 2024",
+        "filter": {
+            "key": "Year",
+            "value": [2023]
+        }
+    },
+    "aime24": {
+        "name": "AIME Mathematical Problems",
+        "path": "Maxwell-Jia/AIME_2024",
+        "answer_type": "boxed",
+        "id_field": "ID",
+        "question_field": "Problem",
+        "answer_field": "Answer",
+        "prompt_template": "{question}",
+        "description": "American Invitational Mathematics Examination problems with numerical answers"
+    },
+    "gpqa": {
+        "name": "GPQA Diamond Multiple Choice",
+        "path": "Idavidrein/gpqa",
+        "dataset_config": "gpqa_diamond",
+        "answer_type": "multiple_choice",
+        "id_field": "Record ID",
+        "question_field": "Question",
+        "answer_field": "Correct Answer",
+        "prompt_template": "",
+        "options_fields": ["Correct Answer", "Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"],
+        "description": "Graduate-level multiple-choice questions across various domains"
+    },
+    "gpqa_extended": {
+        "name": "GPQA Extended Multiple Choice",
+        "path": "Idavidrein/gpqa",
+        "dataset_config": "gpqa_extended",
+        "answer_type": "multiple_choice",
+        "id_field": "Record ID",
+        "question_field": "Question",
+        "answer_field": "Correct Answer",
+        "prompt_template": "",
+        "options_fields": ["Correct Answer", "Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"],
+        "description": "Graduate-level multiple-choice questions across various domains"
+    },
+    "mmlu-pro":{
+        "name": "MMLU-Pro",
+        "path": "TIGER-Lab/MMLU-Pro",
+        "answer_type": "mmlu-multiple-choice",
+        "id_field": "question_id",
+        "question_field": "question",
+        "answer_field": "answer",
+        "prompt_template": "",
+        "options_fields": "options",
+        "description": "Multiple-choice questions from MMLU-Pro dataset",
+        "selected_subjects": "all"
+    },
+    "aime25": {
+        "name": "AIME Mathematical Problems",
+        "path": "yentinglin/aime_2025",
+        "answer_type": "boxed",
+        "id_field": "id",
+        "question_field": "problem",
+        "answer_field": "answer",
+        "prompt_template": "{question}",
+        "description": "American Invitational Mathematics Examination problems with numerical answers"
+    },
+    "livecodebench": {
+        "name": "LiveCodeBench",
+        "path": "livecodebench/code_generation_lite",
+        "dataset_config": "v4_v5",
+        "answer_type": "livecodebench",
+        "id_field": "question_id",
+        "question_field": "question_content",
+        "answer_field": "public_test_cases",
+        "prompt_template": "{question}",
+        "description": "LiveCodeBench dataset"
+    },
+    "mmlu-pro_strange":{
+        "name": "MMLU-Pro",
+        "path": "GY2233/mmlu-pro-strange",
+        "answer_type": "mmlu-multiple-choice",
+        "id_field": "question_id",
+        "question_field": "question",
+        "answer_field": "answer",
+        "prompt_template": "",
+        "options_fields": "options",
+        "description": "Multiple-choice questions from MMLU-Pro dataset",
+        "selected_subjects": "all"
+    },
+    "mmlu-redux":{
+        "name": "MMLU-Redux",
+        "path": "GY2233/mmlu-redux",
+        "answer_type": "mmlu-multiple-choice",
+        "id_field": "question_id",
+        "question_field": "question",
+        "answer_field": "answer",
+        "prompt_template": "",
+        "options_fields": "options",
+        "description": "Multiple-choice questions from MMLU-Redux dataset",
+        "selected_subjects": "test"
+    },
+    "math500": {
+        "name": "MATH-500",
+        "path": "HuggingFaceH4/MATH-500",
+        "answer_type": "boxed",
+        "id_field": "unique_id",
+        "question_field": "problem",
+        "answer_field": "answer",
+        "prompt_template": "{question}\n\nPlease put your final answer within \\boxed{{}}.",
+        "sanitize_id_for_filesystem": true,
+        "description": "500 competition-level MATH problems (HF HuggingFaceH4/MATH-500 test split). Ground-truth answers are LaTeX strings; grading uses string equality after \\boxed{} extraction from the model output."
+    },
+    "amc": {
+        "name": "AMC 12 (full, HuggingFace edev2000/amc12-full)",
+        "path": "edev2000/amc12-full",
+        "answer_type": "amc",
+        "id_field": "problem_id",
+        "question_field": "question",
+        "answer_field": "answer",
+        "prompt_template": "",
+        "description": "American Mathematics Competition AMC 12 problems (2000–2025), five-way multiple choice A–E. The question field includes full statement and choices; grading parses the last-line pattern Answer: LETTER."
+    },
+    "amc_recent": {
+        "name": "AMC 12 (recent years only)",
+        "path": "edev2000/amc12-full",
+        "answer_type": "amc",
+        "id_field": "problem_id",
+        "question_field": "question",
+        "answer_field": "answer",
+        "prompt_template": "",
+        "id_prefix_filter": ["2020", "2021", "2022", "2023", "2024", "2025"],
+        "description": "Subset of amc: problem_id starts with a contest year 2020–2025 (HF set has no separate year column)."
+    },
+    "svamp": {
+        "name": "SVAMP (ChilleD/SVAMP)",
+        "path": "ChilleD/SVAMP",
+        "hf_split": "test",
+        "max_new_tokens": 4096,
+        "answer_type": "boxed",
+        "id_field": "ID",
+        "question_field": "question_concat",
+        "answer_field": "Answer",
+        "prompt_template": "{question}\n\nPlease put your final answer within \\boxed{{}}.",
+        "description": "SVAMP arithmetic word problems; uses the official test split (300 examples). question_concat is Body+Question as one string."
+    }
+}

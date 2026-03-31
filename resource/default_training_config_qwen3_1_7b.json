@@ -1,0 +1,75 @@
+{
+  "model": {
+    "model_type": "HiddenStatesTokenLMHeadLogitsClassifier",
+    "init_args": {
+      "hidden_states_size": 2048,
+      "logits_size": 100,
+      "hidden_dims": [
+        1024,
+        1024,
+        1024,
+        1024,
+        1024,
+        1024
+      ],
+      "expansion_factor": 4,
+      "dropout_rate": 0.1,
+      "use_position_embedding": false,
+      "freeze_lm_head": true,
+      "normalize_input": false,
+      "pretrained_model_name": "Qwen/Qwen3-1.7B"
+    },
+    "model_specific_args": {},
+    "input_type": [
+      "hidden_states",
+      "token",
+      "logits"
+    ],
+    "output_type": "binary"
+  },
+  "data": {
+    "train": {
+      "path": [
+        "local:output_qwen3_1_7b/query_dataset_train/LLM_response/SLM_prefill/LLM_continuation_verify/divergent_label_dataset"
+      ],
+      "type": "divergent",
+      "input_prefix": "small_"
+    },
+    "test": {
+      "path": [
+        "local:output_qwen3_1_7b/query_dataset_validation/LLM_response/SLM_prefill/LLM_continuation_verify/divergent_label_dataset"
+    ],
+      "type": "divergent",
+      "input_prefix": "small_"
+    }
+  },
+  "training": {
+    "optimizer": {
+      "lr": 5e-05,
+      "weight_decay": 5e-04
+    },
+    "params": {
+      "num_epochs": 50,
+      "batch_size": 1024,
+      "patience": 10,
+      "device": "cuda"
+    },
+    "loss": {
+      "type": "BCEWithLogitsLoss",
+      "recall_factor": 1.0
+    },
+    "validation": {
+      "valid_freq": 2
+    },
+    "dtype": "float32"
+  },
+  "optimizing": {
+    "type": "threshold",
+    "min_recall": 0.95
+  },
+  "output": {
+    "output_dir": "resource/default_router_qwen3_1_7b.pt",
+    "checkpoint_dir": "output/checkpoint_qwen3_1_7b",
+    "model_name": null
+  }
+}

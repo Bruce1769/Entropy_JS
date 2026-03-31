@@ -1,0 +1,27 @@
+{
+  "special_tokens": {
+    "think_start": 151667,
+    "think_end": 151668
+  },
+  "quick": {
+    "model_name": "Qwen3-0.6B",
+    "model_path": "Qwen/Qwen3-0.6B",
+    "param": "0.6",
+    "mem_fraction_static": 0.42
+  },
+  "reference": {
+    "model_name": "Qwen3-8B",
+    "model_path": "Qwen/Qwen3-8B",
+    "param": "8",
+    "mem_fraction_static": 0.78
+  },
+  "router": {
+    "switching_strategy": "sliding_window_entropy_js",
+    "window_size": 5,
+    "entropy_sum_threshold": 2.25,
+    "entropy_mean_threshold": 0.45,
+    "js_threshold": 0.02,
+    "rpc_timeout_s": 20.0,
+    "intervention_mode": "replace_first"
+  }
+}
