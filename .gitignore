@@ -28,8 +28,8 @@ experiments/**/model_config.json
 experiments/**/args.json
 experiments/**/launch_cmd.sh
 
-# Weights & caches (obtain separately)
-models/
+# Weights & caches (obtain separately) — repo-root only (do not match r2r/models/)
+/models/
 resource/Qwen3-0.6B+Qwen3-8B/
 resource/.cache/
 *.pt
