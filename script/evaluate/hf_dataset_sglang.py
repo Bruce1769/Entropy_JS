@@ -720,12 +720,19 @@ def evaluate_problem(
             inputs = [generator.tokenizer.encode(prompt) for prompt in prompts]
             if test_run_time:
                 start_time = time.time()
+            display_progress = os.environ.get("R2R_DISPLAY_PROGRESS", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
             gen_results = generator.generate(
                 inputs,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 top_k=args.top_k,
+                display_progress=display_progress,
             )
             
             if test_run_time:

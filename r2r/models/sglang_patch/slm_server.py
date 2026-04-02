@@ -14,6 +14,7 @@ import os
 import threading
 import queue
 import sys
+import json
 from multiprocessing import Value
 import nvtx
 
@@ -49,13 +50,19 @@ from r2r.utils.switching import (
 from r2r.utils.token_manager import SGLangTokenManager
 from r2r.utils.dataclass import ModelOutputs
 from r2r.utils.sampling import sample_token
-from r2r.utils.metrics import compute_entropy, compute_js_divergence_logits, log_prob_of_token
+from r2r.utils.metrics import (
+    compute_entropy,
+    compute_js_divergence_logits,
+    compute_js_divergence_topk_union,
+    log_prob_of_token,
+)
 from r2r.models.sglang_patch.schedule_req import (
     WaitingReq,
     SimpleSamplingParams,
     EntropyLookaheadRpc,
     EntropyLookaheadResp,
     NextTokenJsRpc,
+    NextTokenJsAbortRpc,
     NextTokenJsResp,
     SlidingWindowJsRpc,
     SlidingWindowJsResp,
@@ -63,6 +70,26 @@ from r2r.models.sglang_patch.schedule_req import (
 
 _el_rpc_fail_last_log = 0.0
 _el_rpc_fail_pending = 0
+
+_AGENT_DEBUG_LOG_PATH = "/remote-home/pxl/.cursor/debug-7a73bd.log"
+_AGENT_DEBUG_SESSION_ID = "7a73bd"
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        payload = {
+            "sessionId": _AGENT_DEBUG_SESSION_ID,
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _log_entropy_lookahead_rpc_fail_throttled(err: object, seq_i: int) -> None:
@@ -277,6 +304,16 @@ class SLMServer:
                     continue
                 try:
                     self._pub_finished.send_pyobj(item)
+                    if isinstance(item, dict) and item.get("status") == "finished":
+                        #region agent log
+                        _agent_debug_log(
+                            run_id=os.environ.get("R2R_DEBUG_RUN_ID", "run-unknown"),
+                            hypothesis_id="H2",
+                            location="slm_server.py:_send_finished_loop",
+                            message="published_finished_event",
+                            data={"rid": item.get("rid"), "status": item.get("status")},
+                        )
+                        #endregion
                 except Exception:
                     pass
         self._send_finished_thread = threading.Thread(target=_send_finished_loop, daemon=True)
@@ -487,7 +524,45 @@ class SLMServer:
                         SLMServer.process_result_from_llm(rank, scheduler, llm_reqs, finished_queue, outbound_queue)
                 
                 recv_reqs = SLMServer.recv_requests(scheduler)
+                if (
+                    rank == 0
+                    and recv_reqs
+                    and os.environ.get("R2R_TRACE_REQ_FLOW", "").strip().lower() in ("1", "true", "yes", "on")
+                ):
+                    print(
+                        f"[req-recv] count={len(recv_reqs)} "
+                        f"rids={[getattr(r, 'rid', None) for r in recv_reqs[:8]]}",
+                        flush=True,
+                    )
+                if rank == 0 and recv_reqs:
+                    #region agent log
+                    _agent_debug_log(
+                        run_id=os.environ.get("R2R_DEBUG_RUN_ID", "run-unknown"),
+                        hypothesis_id="H5",
+                        location="slm_server.py:quick_model_worker_recv",
+                        message="received_reqs_from_system",
+                        data={
+                            "num_reqs": len(recv_reqs),
+                            "rids": [getattr(r, "rid", None) for r in recv_reqs[:8]],
+                            "statuses": [getattr(r, "status", None) for r in recv_reqs[:8]],
+                        },
+                    )
+                    #endregion
                 ok = SLMServer.process_new_requests(recv_reqs, scheduler, rank, outbound_queue)
+                if rank == 0 and recv_reqs:
+                    #region agent log
+                    _agent_debug_log(
+                        run_id=os.environ.get("R2R_DEBUG_RUN_ID", "run-unknown"),
+                        hypothesis_id="H5",
+                        location="slm_server.py:quick_model_worker_post_process_new_requests",
+                        message="requests_enqueued_to_waiting_queue",
+                        data={
+                            "recv_count": len(recv_reqs),
+                            "waiting_queue_len": len(getattr(scheduler, "waiting_queue", []) or []),
+                            "batch_not_need_len": len(getattr(getattr(scheduler, "batch_not_need", None), "reqs", []) or []),
+                        },
+                    )
+                    #endregion
                 if ok is False:
                     print(f"[quick rank{rank}] SHUTDOWN received, exiting...")
                     break
@@ -511,6 +586,12 @@ class SLMServer:
                     if rank == 0:
                         SLMServer.update_tqdm(pbar_dict, batch, scheduler)
                     nvtx.pop_range()
+        except (SystemExit, KeyboardInterrupt):
+            pass
+        except BaseException as e:
+            print(f"[quick rank{rank}] SLM worker fatal error: {e}", flush=True)
+            import traceback as _tb
+            _tb.print_exc()
         finally:
             try:
                 if dist.is_initialized():
@@ -1251,6 +1332,8 @@ class SLMServer:
         device = logits.device
         batch_size = logits.shape[0]
         choices = torch.zeros(batch_size, dtype=torch.int, device=device)
+        _cooldown = max(0, int(os.environ.get("R2R_EVJS_COOLDOWN", "0")))
+        _log_all = os.environ.get("R2R_LOG_EVJS_ALL", "").strip().lower() in ("1", "true", "yes", "on")
         for i in range(batch_size):
             req = batch.reqs[i]
             if not hasattr(req, "current_llm_reason"):
@@ -1260,7 +1343,7 @@ class SLMServer:
             if not (H > router.entropy_threshold):
                 choices[i] = 0
                 req.current_llm_reason = None
-                if os.environ.get("R2R_LOG_EVJS_ALL", "").strip().lower() in ("1", "true", "yes", "on"):
+                if _log_all:
                     print(
                         f"[evjs-gate] rid={getattr(req, 'rid', '?')} "
                         f"entropy={H:.6f} thr_entropy={float(router.entropy_threshold):.6f} "
@@ -1268,10 +1351,28 @@ class SLMServer:
                         flush=True,
                     )
                 continue
+            # --- RPC cooldown: skip expensive LLM RPC for N steps after last "stay-on-SLM" ---
+            if _cooldown > 0:
+                cd_remaining = getattr(req, "_evjs_rpc_cooldown", 0)
+                if cd_remaining > 0:
+                    req._evjs_rpc_cooldown = cd_remaining - 1
+                    choices[i] = 0
+                    req.current_llm_reason = None
+                    if _log_all:
+                        print(
+                            f"[evjs-cooldown] rid={getattr(req, 'rid', '?')} "
+                            f"entropy={H:.6f} cooldown_remaining={cd_remaining - 1} "
+                            f"-> gate=SLM (skipped RPC)",
+                            flush=True,
+                        )
+                    continue
             ctx = list(req.origin_input_ids) + list(req.output_ids)
             qid = int(time.time_ns() % (1 << 62)) + i
-            # 不传 rid：LLM 侧用一次性 forward 取 JS logits 后释放 KV，避免 fused stash+EVJS_CONTINUE 与调度器状态不一致导致卡死
-            rpc = NextTokenJsRpc(query_id=qid, context_ids=ctx)
+            rpc = NextTokenJsRpc(
+                query_id=qid,
+                context_ids=ctx,
+                rid=str(getattr(req, "rid", qid)),
+            )
             query_queue.put(rpc)
             err_msg = ""
             try:
@@ -1283,7 +1384,14 @@ class SLMServer:
                 resp is None
                 or not isinstance(resp, NextTokenJsResp)
                 or not resp.ok
-                or resp.llm_logits is None
+                or (
+                    resp.llm_logits is None
+                    and (
+                        resp.llm_topk_indices is None
+                        or resp.llm_topk_probs is None
+                        or resp.llm_tail_mass is None
+                    )
+                )
             )
             if bad:
                 if not err_msg and resp is not None:
@@ -1292,10 +1400,16 @@ class SLMServer:
                     err_msg = "timeout_or_bad_resp"
                 choices[i] = 0
                 req.current_llm_reason = None
+                if _cooldown > 0:
+                    req._evjs_rpc_cooldown = _cooldown * 2
+                try:
+                    query_queue.put_nowait(NextTokenJsAbortRpc(rid=str(req.rid)))
+                except Exception:
+                    pass
                 print(
                     f"[evjs-rpc-fail] rid={getattr(req, 'rid', '?')} "
                     f"entropy={H:.6f} thr_entropy={float(router.entropy_threshold):.6f} "
-                    f"error={err_msg} -> route=SLM",
+                    f"error={err_msg} cooldown={_cooldown * 2} -> route=SLM",
                     flush=True,
                 )
                 append_entropy_lookahead_score_log(
@@ -1312,11 +1426,27 @@ class SLMServer:
                     },
                 )
                 continue
-            llm_t = torch.as_tensor(resp.llm_logits).float().flatten()
-            js = float(compute_js_divergence_logits(L0.cpu().float(), llm_t))
+            if resp.llm_logits is not None:
+                llm_t = torch.as_tensor(resp.llm_logits).float().flatten()
+                js = float(compute_js_divergence_logits(L0.cpu().float(), llm_t))
+            else:
+                topk_js_k = int(getattr(resp, "topk", 16) or 16)
+                js = float(
+                    compute_js_divergence_topk_union(
+                        L0.cpu().float(),
+                        q_topk_indices=list(resp.llm_topk_indices or []),
+                        q_topk_probs=list(resp.llm_topk_probs or []),
+                        q_tail_mass=float(resp.llm_tail_mass or 0.0),
+                        top_k=topk_js_k,
+                    )
+                )
             if js > float(router.js_threshold):
                 choices[i] = 1
-                req._reuse_llm_first_logits = llm_t.cpu().clone()
+                if resp.llm_logits is not None:
+                    req._reuse_llm_first_logits = llm_t.cpu().clone()
+                else:
+                    # top-k payload cannot reconstruct full-vocab logits for reuse sampling.
+                    req._reuse_llm_first_logits = None
                 req.current_llm_reason = "entropy_variance_js"
                 print(
                     f"[evjs-switch] rid={getattr(req, 'rid', '?')} "
@@ -1342,11 +1472,18 @@ class SLMServer:
             else:
                 choices[i] = 0
                 req.current_llm_reason = None
-                if os.environ.get("R2R_LOG_EVJS_ALL", "").strip().lower() in ("1", "true", "yes", "on"):
+                if _cooldown > 0:
+                    req._evjs_rpc_cooldown = _cooldown
+                try:
+                    query_queue.put_nowait(NextTokenJsAbortRpc(rid=str(req.rid)))
+                except Exception:
+                    pass
+                if _log_all:
                     print(
                         f"[evjs-keep] rid={getattr(req, 'rid', '?')} "
                         f"entropy={H:.6f} thr_entropy={float(router.entropy_threshold):.6f} "
-                        f"js={js:.6f} thr_js={float(router.js_threshold):.6f} -> route=SLM",
+                        f"js={js:.6f} thr_js={float(router.js_threshold):.6f} "
+                        f"cooldown={_cooldown} -> route=SLM",
                         flush=True,
                     )
                 append_entropy_lookahead_score_log(
@@ -1361,6 +1498,7 @@ class SLMServer:
                         "js": js,
                         "js_threshold": float(router.js_threshold),
                         "routed_to_llm": False,
+                        "cooldown_set": _cooldown,
                     },
                 )
         router.state.last_model = "reference" if choices.any().item() else "quick"
@@ -1614,6 +1752,8 @@ class SLMServer:
                     if llm_used and (did_truncate or incremental_empty or len(new_token_ids) == 0):
                         new_token_ids = list(req.origin_input_ids) + list(req.output_ids)
                         st = "RETRACT_AND_PREFILL"
+                    elif st == "entropy_variance_js" and not llm_used and not did_truncate:
+                        st = "EVJS_CONTINUE"
 
                     req.last_llm_loc = len(req.output_ids)
                     waiting_req = WaitingReq(
@@ -1703,6 +1843,36 @@ class SLMServer:
             # Track SLM token generation
             req.slm_token_count = getattr(req, 'slm_token_count', 0) + 1
             req.check_finished()
+            cur_len = len(req.output_ids)
+            milestone = cur_len // 128
+            if rank == 0 and milestone > getattr(req, "_agent_debug_milestone", -1):
+                req._agent_debug_milestone = milestone
+                if os.environ.get("R2R_LOG_GENERATION_PREVIEW", "").strip().lower() in ("1", "true", "yes", "on"):
+                    try:
+                        tail_ids = list(req.output_ids[-24:])
+                        tail_text = scheduler.tokenizer.decode(tail_ids) if tail_ids else ""
+                        print(
+                            f"[gen-preview] rid={getattr(req, 'rid', '?')} out_len={cur_len} tail={tail_text!r}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
+                #region agent log
+                _agent_debug_log(
+                    run_id=os.environ.get("R2R_DEBUG_RUN_ID", "run-unknown"),
+                    hypothesis_id="H1",
+                    location="slm_server.py:process_batch_results",
+                    message="req_progress_milestone",
+                    data={
+                        "rid": getattr(req, "rid", None),
+                        "output_len": cur_len,
+                        "slm_token_count": int(getattr(req, "slm_token_count", 0)),
+                        "llm_token_count": int(getattr(req, "llm_token_count", 0)),
+                        "finished": bool(req.finished()),
+                        "status": getattr(req, "status", None),
+                    },
+                )
+                #endregion
             if req.finished():
                 SLMServer.tree_cache_finished_req_safe(scheduler, req)
                 finished_reqs.append(req)
@@ -1747,6 +1917,20 @@ class SLMServer:
                     "llm_token_count": llm_count,
                     "llm_ratio": llm_count / total_count if total_count > 0 else 0.0,
                 }
+                #region agent log
+                _agent_debug_log(
+                    run_id=os.environ.get("R2R_DEBUG_RUN_ID", "run-unknown"),
+                    hypothesis_id="H4",
+                    location="slm_server.py:process_finished_requests",
+                    message="req_marked_finished",
+                    data={
+                        "rid": payload.get("rid"),
+                        "output_len": len(payload.get("output_ids", [])),
+                        "slm_token_count": int(slm_count),
+                        "llm_token_count": int(llm_count),
+                    },
+                )
+                #endregion
                 try:
                     finished_queue.put_nowait(payload)
                 except Exception:

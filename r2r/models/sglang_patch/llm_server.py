@@ -229,8 +229,149 @@ class LLMServer:
 
     @staticmethod
     def _llm_one_off_forward_logits_persist(scheduler: Scheduler, context_ids: List[int], rid: str) -> torch.Tensor:
-        """Same as _llm_one_off_forward_logits but keeps KV for EVJS_CONTINUE (same rid)."""
+        """Keeps KV for EVJS_CONTINUE. Reuses stashed KV when possible (incremental extend)."""
         rid = str(rid)
+        if not hasattr(scheduler, "_r2r_evjs_stash"):
+            scheduler._r2r_evjs_stash = {}
+
+        stash = scheduler._r2r_evjs_stash.get(rid)
+        if stash is not None:
+            try:
+                row = LLMServer._llm_incremental_forward(
+                    scheduler, stash, context_ids, rid
+                )
+                if row is not None:
+                    return row
+            except Exception as e:
+                print(f"[evjs-incr-fallback] rid={rid} error={e}, falling back to full prefill", flush=True)
+            LLMServer._free_evjs_stash_entry(scheduler, rid)
+        else:
+            LLMServer._free_evjs_stash_entry(scheduler, rid)
+
+        return LLMServer._llm_full_prefill_persist(scheduler, context_ids, rid)
+
+    @staticmethod
+    def _llm_incremental_forward(
+        scheduler: Scheduler, stash: dict, context_ids: List[int], rid: str,
+    ) -> Optional[torch.Tensor]:
+        """Extend stashed KV with new tokens only. Returns None if extension not possible."""
+        old_req = stash["req"]
+        old_len = stash.get("context_len", len(list(old_req.origin_input_ids)))
+        new_len = len(context_ids)
+        if new_len <= old_len:
+            return None
+        old_prefix = list(old_req.origin_input_ids)
+        if context_ids[:old_len] != old_prefix[:old_len]:
+            return None
+        old_pool_idx = getattr(old_req, "req_pool_idx", None)
+        if old_pool_idx is None:
+            return None
+
+        new_tokens = context_ids[old_len:]
+        n_new = len(new_tokens)
+
+        sp = SamplingParams(temperature=0.0, top_p=1.0, top_k=-1, max_new_tokens=1, stop=[])
+        sp.normalize(None)
+        req = Req(
+            rid=rid,
+            origin_input_text="",
+            origin_input_ids=context_ids,
+            sampling_params=sp,
+            eos_token_ids=scheduler.model_config.hf_eos_token_id,
+            return_hidden_states=False,
+            vocab_size=scheduler.model_config.vocab_size,
+            status="need",
+        )
+        req.req_pool_idx = old_pool_idx
+        req.output_ids = []
+        req.fill_ids = list(context_ids)
+        req.extend_input_len = n_new
+        req.already_computed = old_len
+        req.cached_tokens = old_len
+        req.is_retracted = False
+        req.prefix_indices = [0] * old_len
+
+        batch = ScheduleBatch.init_new(
+            [req],
+            scheduler.req_to_token_pool,
+            scheduler.token_to_kv_pool_allocator,
+            scheduler.tree_cache,
+            scheduler.model_config,
+            scheduler.enable_overlap,
+            scheduler.spec_algorithm,
+            scheduler.server_args.enable_custom_logit_processor,
+        )
+        batch.forward_mode = ForwardMode.EXTEND
+        if not hasattr(req, "device"):
+            req.device = batch.device
+        device = batch.device
+
+        if batch.token_to_kv_pool_allocator.page_size == 1:
+            out_cache_loc = batch.alloc_token_slots(n_new)
+        else:
+            prefix_t = torch.tensor([old_len], dtype=torch.int64, device=device)
+            seq_t = torch.tensor([new_len], dtype=torch.int64, device=device)
+            pool_t = torch.tensor([old_pool_idx], dtype=torch.int64, device=device)
+            last_loc = get_last_loc(
+                batch.req_to_token_pool.req_to_token, pool_t, prefix_t,
+            )
+            out_cache_loc = batch.alloc_paged_token_slots_extend(
+                prefix_t, seq_t, last_loc, n_new,
+            )
+
+        input_ids_t = torch.tensor(new_tokens, dtype=torch.int64, device=device)
+        req_pool_t = torch.tensor([old_pool_idx], dtype=torch.int64, device=device)
+        seq_lens_t = torch.tensor([new_len], dtype=torch.int64, device=device)
+        prefix_lens_t = torch.tensor([old_len], dtype=torch.int64, device=device)
+        extend_lens_t = seq_lens_t - prefix_lens_t
+
+        write_req_to_token_pool_triton[(1,)](
+            batch.req_to_token_pool.req_to_token,
+            req_pool_t,
+            prefix_lens_t,
+            seq_lens_t,
+            extend_lens_t,
+            out_cache_loc,
+            batch.req_to_token_pool.req_to_token.shape[1],
+        )
+
+        batch.input_ids = input_ids_t
+        batch.req_pool_indices = req_pool_t
+        batch.seq_lens = seq_lens_t
+        batch.out_cache_loc = out_cache_loc
+        batch.input_embeds = None
+        batch.seq_lens_sum = new_len
+        batch.extend_logprob_start_lens = [0]
+        batch.extend_num_tokens = n_new
+        batch.prefix_lens = [old_len]
+        batch.extend_lens = [n_new]
+        batch.return_logprob = False
+        batch.sampling_info = SamplingBatchInfo.from_schedule_batch(
+            batch, batch.model_config.vocab_size,
+        )
+
+        model_batch = batch.get_model_worker_batch()
+        result = scheduler.tp_worker.forward_batch_generation(model_batch)
+        logits_output = result[0] if isinstance(result, tuple) else result.logits_output
+        row = logits_output.next_token_logits[0].float()
+
+        all_kv = torch.cat([stash.get("kv_locs", torch.tensor([], device=device)), out_cache_loc])
+        scheduler._r2r_evjs_stash[rid] = {
+            "req": req,
+            "kv_locs": all_kv,
+            "context_len": new_len,
+        }
+        if os.environ.get("R2R_LOG_EVJS_ALL", "").strip().lower() in ("1", "true", "yes", "on"):
+            print(
+                f"[evjs-incr-ok] rid={rid} old_len={old_len} new_len={new_len} "
+                f"delta={n_new} kv_total={all_kv.numel()}",
+                flush=True,
+            )
+        return row
+
+    @staticmethod
+    def _llm_full_prefill_persist(scheduler: Scheduler, context_ids: List[int], rid: str) -> torch.Tensor:
+        """Full-context prefill, stashing KV for potential EVJS_CONTINUE reuse."""
         sp = SamplingParams(temperature=0.0, top_p=1.0, top_k=-1, max_new_tokens=1, stop=[])
         sp.normalize(None)
         req = Req(
@@ -267,9 +408,11 @@ class LLMServer:
             result = scheduler.tp_worker.forward_batch_generation(model_batch)
             logits_output = result[0] if isinstance(result, tuple) else result.logits_output
             row = logits_output.next_token_logits[0].float()
-            if not hasattr(scheduler, "_r2r_evjs_stash"):
-                scheduler._r2r_evjs_stash = {}
-            scheduler._r2r_evjs_stash[rid] = {"req": req, "kv_locs": kv_locs}
+            scheduler._r2r_evjs_stash[rid] = {
+                "req": req,
+                "kv_locs": kv_locs,
+                "context_len": len(context_ids),
+            }
             return row
         except Exception:
             try:
@@ -366,9 +509,17 @@ class LLMServer:
                 )
             else:
                 row = LLMServer._llm_one_off_forward_logits(scheduler, list(rpc.context_ids))
+            k = max(1, int(os.environ.get("R2R_EVJS_TOPK", "16")))
+            probs = torch.softmax(row.float(), dim=-1)
+            k = min(k, int(probs.numel()))
+            vals, idx = torch.topk(probs, k=k, dim=-1)
+            tail = float(torch.clamp(1.0 - vals.sum(), min=0.0).item())
             return NextTokenJsResp(
                 query_id=rpc.query_id,
-                llm_logits=row.detach().cpu().numpy(),
+                llm_topk_indices=[int(x) for x in idx.detach().cpu().tolist()],
+                llm_topk_probs=[float(x) for x in vals.detach().cpu().tolist()],
+                llm_tail_mass=tail,
+                topk=int(k),
                 ok=True,
             )
         except Exception as e:
@@ -465,7 +616,7 @@ class LLMServer:
                             resp = LLMServer._next_token_js_llm_logits(scheduler, rpc)
                             entropy_lookahead_reply_queue.put(resp)
                         elif isinstance(rpc, NextTokenJsAbortRpc):
-                            LLMServer._free_evjs_stash_entry(scheduler, str(rpc.rid))
+                            pass
 
                 if inbound_queue is not None: # Process message from LLM
                     slm_reqs = LLMServer.recv_reqs_from_slm(

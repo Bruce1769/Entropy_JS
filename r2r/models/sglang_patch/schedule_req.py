@@ -65,7 +65,11 @@ class NextTokenJsAbortRpc:
 @dataclass
 class NextTokenJsResp:
     query_id: int
-    llm_logits: Optional[object] = None  # numpy.ndarray [vocab] or None on failure
+    llm_logits: Optional[object] = None  # backward-compat: full logits [vocab]
+    llm_topk_indices: Optional[List[int]] = None  # compact payload for EVJS
+    llm_topk_probs: Optional[List[float]] = None  # compact payload for EVJS
+    llm_tail_mass: Optional[float] = None  # compact payload for EVJS
+    topk: Optional[int] = None
     ok: bool = True
     error: Optional[str] = None
 
